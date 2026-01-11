@@ -1,16 +1,6 @@
-an
-"""
 ================================================================================
 SPOI WAREHOUSE OPTIMIZATION - STREAMLIT APP
 ================================================================================
-Streamlit aplikacija koja koristi warehouse_model.py
-
-Potrebni fajlovi u istom folderu:
-- spoi_streamlit.py (ovaj fajl)
-- warehouse_model.py (model)
-- SPOI_DATA (1) new.xlsx (podaci)
-================================================================================
-"""
 
 import streamlit as st
 import pandas as pd
