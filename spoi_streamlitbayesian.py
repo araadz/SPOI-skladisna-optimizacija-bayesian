@@ -1,4 +1,4 @@
-
+an
 """
 ================================================================================
 SPOI WAREHOUSE OPTIMIZATION - STREAMLIT APP
@@ -215,7 +215,7 @@ with tab1:
                     best_text.markdown(f"**Najbolji utility do sada:** {best_score:.3f}")
     
                 with st.spinner("Optimiziram parametre..."):
-                    best_params, best_score = model.optimize_parameters(
+                    best_params, best_score = model.bayesian_optimize_parameters(
                         st.session_state['df_raw'],
                         n_trials=N_TRIALS,
                         progress_callback=progress_callback
