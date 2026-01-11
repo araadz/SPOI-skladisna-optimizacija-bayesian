@@ -121,8 +121,7 @@ def simulate_picks(assign, df, df_pos, params):
             df_pos.iloc[assign[i]]['E'],
             params
         )
-        for i in range(n)
-    ])
+        for i in range(n)])
 
     costs = np.array([
         calculate_cost(
@@ -131,8 +130,7 @@ def simulate_picks(assign, df, df_pos, params):
             df_pos.iloc[assign[i]]['E'],
             params
         )
-        for i in range(n)
-    ])
+        for i in range(n)])
 
     izlaz = df['izlaz'].values
     probs = izlaz / izlaz.sum()
