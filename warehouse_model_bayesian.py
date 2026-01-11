@@ -114,4 +114,33 @@ def simulate_picks(assign, df, df_pos, params):
     n = len(df)
 
     utils = np.array([
-        ca
+        calculate_utility(
+            df.iloc[i]['izlaz_norm'],
+            df_pos.iloc[assign[i]]['H'],
+            df_pos.iloc[assign[i]]['V'],
+            df_pos.iloc[assign[i]]['E'],
+            params
+        )
+        for i in range(n)
+    ])
+
+    costs = np.array([
+        calculate_cost(
+            df_pos.iloc[assign[i]]['H'],
+            df_pos.iloc[assign[i]]['V'],
+            df_pos.iloc[assign[i]]['E'],
+            params
+        )
+        for i in range(n)
+    ])
+
+    izlaz = df['izlaz'].values
+    probs = izlaz / izlaz.sum()
+    np.random.seed(42)
+    picked = np.random.choice(n, size=params['N_PICKS'], p=probs)
+    sim_cost = costs[picked].sum()
+
+    wH = np.sum(df_pos.iloc[list(assign.values())]['H'].values * izlaz) / izlaz.sum()
+    wV = np.sum(df_pos.iloc[list(assign.values())]['V'].values * izlaz) / izlaz.sum()
+
+    return utils, costs, sim_cost, wH, wV
