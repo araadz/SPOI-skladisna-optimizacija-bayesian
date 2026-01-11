@@ -1,9 +1,11 @@
 import numpy as np
 import pandas as pd
+import pulp
 
-# ============================================================
-# DEFAULT PARAMETRI
-# ============================================================
+from skopt import gp_minimize
+from skopt.space import Real, Integer
+from skopt.utils import use_named_args
+
 
 DEFAULT_PARAMS = {
     'COST_A': 2.0,
@@ -11,117 +13,55 @@ DEFAULT_PARAMS = {
     'COST_C': 2.0,
     'TAU': 8.0,
     'DEMAND_MULTIPLIER': 15,
-    'N_PICKS': 1000 
+    'N_PICKS': 1000
 }
 
-# ============================================================
-# COST / QUALITY / UTILITY
-# ============================================================
 
-def calculate_cost(H, V, E, p):
+def calculate_cost(H, V, E, params):
     return (
-        p['COST_A'] * H +
-        p['COST_B'] * max(0, V - 2) +
-        p['COST_C'] * (4 - E)
+        params['COST_A'] * H +
+        params['COST_B'] * max(0, V - 2) +
+        params['COST_C'] * (4 - E)
     )
 
-def calculate_quality(H, V, E, p):
-    return np.exp(-calculate_cost(H, V, E, p) / p['TAU'])
 
-def calculate_utility(izlaz_norm, H, V, E, p):
-    return calculate_quality(H, V, E, p) * (1 + izlaz_norm * p['DEMAND_MULTIPLIER'])
+def calculate_quality(H, V, E, params):
+    return np.exp(-calculate_cost(H, V, E, params) / params['TAU'])
 
-# ============================================================
-# DATA PREPARATION
-# ============================================================
+
+def calculate_utility(izlaz_norm, H, V, E, params):
+    return calculate_quality(H, V, E, params) * (1 + izlaz_norm * params['DEMAND_MULTIPLIER'])
+
 
 def prepare_data(df):
-    df = df.dropna(subset=['H','V','E','izlaz']).reset_index(drop=True)
-
+    df = df.dropna(subset=['H', 'V', 'E', 'izlaz']).reset_index(drop=True)
     if 'TEZINA_KAT' not in df.columns:
         df['TEZINA_KAT'] = 4
     df['TEZINA_KAT'] = df['TEZINA_KAT'].fillna(4)
-
     max_izlaz = df['izlaz'].max() if df['izlaz'].max() > 0 else 1
     df['izlaz_norm'] = df['izlaz'] / max_izlaz
-
     return df
 
-# ============================================================
-# UTILITY MATRIX
-# ============================================================
 
-def generate_utility_matrix(df, df_pos, p):
+def generate_utility_matrix(df, df_pos, params):
     n = len(df)
     U = np.zeros((n, n))
-
     for i in range(n):
-        d = df.iloc[i]['izlaz_norm']
         for j in range(n):
             U[i, j] = calculate_utility(
-                d,
+                df.iloc[i]['izlaz_norm'],
                 df_pos.iloc[j]['H'],
                 df_pos.iloc[j]['V'],
                 df_pos.iloc[j]['E'],
-                p
+                params
             )
     return U
 
-# ============================================================
-# SIMULATION
-# ============================================================
-
-def simulate_picks(assign, df, df_pos, p):
-    n = len(df)
-
-    utils = np.array([
-        calculate_utility(
-            df.iloc[i]['izlaz_norm'],
-            df_pos.iloc[assign[i]]['H'],
-            df_pos.iloc[assign[i]]['V'],
-            df_pos.iloc[assign[i]]['E'],
-            p
-        )
-        for i in range(n)
-    ])
-
-    costs = np.array([
-        calculate_cost(
-            df_pos.iloc[assign[i]]['H'],
-            df_pos.iloc[assign[i]]['V'],
-            df_pos.iloc[assign[i]]['E'],
-            p
-        )
-        for i in range(n)
-    ])
-
-    izlaz = df['izlaz'].values
-    probs = izlaz / izlaz.sum() if izlaz.sum() > 0 else np.ones(n) / n
-
-    np.random.seed(42)
-    picked = np.random.choice(n, size=p['N_PICKS'], p=probs)
-    sim_cost = costs[picked].sum()
-
-    wH = np.sum(df_pos.iloc[list(assign.values())]['H'].values * izlaz) / izlaz.sum()
-    wV = np.sum(df_pos.iloc[list(assign.values())]['V'].values * izlaz) / izlaz.sum()
-
-    return utils, costs, sim_cost, wH, wV
-
-# ============================================================
-# ILP SOLVER
-# ============================================================
 
 def solve_ilp(U, df, df_pos):
-    import pulp
-
     n = len(df)
-    prob = pulp.LpProblem("WarehouseAssignment", pulp.LpMaximize)
-
-    x = pulp.LpVariable.dicts(
-        "x",
-        ((i, j) for i in range(n) for j in range(n)),
-        cat="Binary"
-    )
+    prob = pulp.LpProblem("Warehouse", pulp.LpMaximize)
+    x = pulp.LpVariable.dicts("x", ((i, j) for i in range(n) for j in range(n)), cat='Binary')
 
     prob += pulp.lpSum(U[i, j] * x[i, j] for i in range(n) for j in range(n))
 
@@ -133,67 +73,78 @@ def solve_ilp(U, df, df_pos):
 
     heavy = df[df['TEZINA_KAT'] >= 4].index.tolist()
     high_v = df_pos[df_pos['V'] > 3].index.tolist()
-
     for i in heavy:
         for j in high_v:
             prob += x[i, j] == 0
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
 
-    assignment = {}
-    for i in range(n):
-        for j in range(n):
-            if pulp.value(x[i, j]) == 1:
-                assignment[i] = j
-                break
+    assignment = {i: j for i in range(n) for j in range(n) if pulp.value(x[i, j]) == 1}
+    return assignment
 
-    return assignment, pulp.LpStatus[prob.status]
 
-# ============================================================
-# CORE OPTIMIZATION (ILP)
-# ============================================================
+def simulate_picks(assign, df, df_pos, params):
+    n = len(df)
+    utils = np.array([
+        calculate_utility(
+            df.iloc[i]['izlaz_norm'],
+            df_pos.iloc[assign[i]]['H'],
+            df_pos.iloc[assign[i]]['V'],
+            df_pos.iloc[assign[i]]['E'],
+            params
+        ) for i in range(n)
+    ])
 
-def optimize(df, params=None):
-    if params is None:
-        params = DEFAULT_PARAMS.copy()
+    costs = np.array([
+        calculate_cost(
+            df_pos.iloc[assign[i]]['H'],
+            df_pos.iloc[assign[i]]['V'],
+            df_pos.iloc[assign[i]]['E'],
+            params
+        ) for i in range(n)
+    ])
 
+    izlaz = df['izlaz'].values
+    probs = izlaz / izlaz.sum()
+    np.random.seed(42)
+    picked = np.random.choice(n, size=params['N_PICKS'], p=probs)
+    sim_cost = costs[picked].sum()
+
+    wH = np.sum(df_pos.iloc[list(assign.values())]['H'].values * izlaz) / izlaz.sum()
+    wV = np.sum(df_pos.iloc[list(assign.values())]['V'].values * izlaz) / izlaz.sum()
+
+    return utils, costs, sim_cost, wH, wV
+
+
+def optimize(df, params):
     df = prepare_data(df)
-    df_pos = df[['H','V','E']].copy().reset_index(drop=True)
+    df_pos = df[['H', 'V', 'E']].reset_index(drop=True)
     n = len(df)
 
     init_assign = {i: i for i in range(n)}
-    init_utils, init_costs, init_sim, init_wH, init_wV = simulate_picks(
-        init_assign, df, df_pos, params
-    )
+    init_utils, init_costs, init_sim, init_wH, init_wV = simulate_picks(init_assign, df, df_pos, params)
 
     U = generate_utility_matrix(df, df_pos, params)
-    opt_assign, status = solve_ilp(U, df, df_pos)
-
-    opt_utils, opt_costs, opt_sim, opt_wH, opt_wV = simulate_picks(
-        opt_assign, df, df_pos, params
-    )
+    opt_assign = solve_ilp(U, df, df_pos)
+    opt_utils, opt_costs, opt_sim, opt_wH, opt_wV = simulate_picks(opt_assign, df, df_pos, params)
 
     return {
         'df': df,
         'df_positions': df_pos,
         'n_items': n,
         'params': params,
-        'status': status,
-
         'init_assign': init_assign,
         'init_utils': init_utils,
         'init_costs': init_costs,
         'init_sim': init_sim,
         'init_wH': init_wH,
         'init_wV': init_wV,
-
         'opt_assign': opt_assign,
         'opt_utils': opt_utils,
         'opt_costs': opt_costs,
         'opt_sim': opt_sim,
         'opt_wH': opt_wH,
         'opt_wV': opt_wV,
-
         'improvement': (opt_utils.sum() - init_utils.sum()) / init_utils.sum() * 100,
         'cost_reduction': (init_sim - opt_sim) / init_sim * 100,
         'h_reduction': (init_wH - opt_wH) / init_wH * 100,
@@ -201,66 +152,38 @@ def optimize(df, params=None):
         'moved': sum(1 for i in range(n) if opt_assign[i] != i)
     }
 
-# ============================================================
-# BAYESIAN OPTIMIZATION OF PARAMETERS
-# ============================================================
 
-from skopt import gp_minimize
-from skopt.space import Real, Integer
+SPACE = [
+    Real(0.5, 5.0, name='COST_A'),
+    Real(1.0, 10.0, name='COST_B'),
+    Real(0.5, 5.0, name='COST_C'),
+    Real(2.0, 20.0, name='TAU'),
+    Integer(5, 30, name='DEMAND_MULTIPLIER')
+]
 
-def bayesian_optimize_parameters(df, n_calls=12, progress_callback=None):
-    space = [
-        Real(0.5, 5.0, name='COST_A'),
-        Real(1.0, 10.0, name='COST_B'),
-        Real(0.5, 5.0, name='COST_C'),
-        Real(2.0, 20.0, name='TAU'),
-        Integer(5, 30, name='DEMAND_MULTIPLIER')
-    ]
 
-    def objective(x):
-        p = DEFAULT_PARAMS.copy()
-        for k, v in zip([s.name for s in space], x):
-            p[k] = v
-        r = optimize(df, p)
-        return -r['opt_utils'].sum()
+def bayesian_optimize_parameters(df, n_calls=15, progress_callback=None):
 
-    def callback(res):
-        if progress_callback is not None:
-            progress_callback(len(res.x_iters), n_calls, -res.fun)
+    df_p = prepare_data(df)
+    df_pos = df_p[['H', 'V', 'E']].reset_index(drop=True)
+
+    @use_named_args(SPACE)
+    def objective(**x):
+        params = DEFAULT_PARAMS.copy()
+        params.update(x)
+        U = generate_utility_matrix(df_p, df_pos, params)
+        return -U.sum()
 
     res = gp_minimize(
         objective,
-        space,
+        SPACE,
         n_calls=n_calls,
-        n_initial_points=4,
-        acq_func="EI",
         random_state=42,
-        callback=[callback]
+        callback=[lambda r: progress_callback(len(r.x_iters), n_calls, -r.fun) if progress_callback else None]
     )
 
     best_params = DEFAULT_PARAMS.copy()
-    for k, v in zip([s.name for s in space], res.x):
+    for k, v in zip([d.name for d in SPACE], res.x):
         best_params[k] = v
 
     return best_params, -res.fun
-
-# ============================================================
-# EXPORT
-# ============================================================
-
-def create_output_dataframe(results):
-    df = results['df'].copy()
-    pos = results['df_positions']
-    opt = results['opt_assign']
-    n = results['n_items']
-
-    df['NOVI_H'] = [int(pos.iloc[opt[i]]['H']) for i in range(n)]
-    df['NOVI_V'] = [int(pos.iloc[opt[i]]['V']) for i in range(n)]
-    df['NOVI_E'] = [int(pos.iloc[opt[i]]['E']) for i in range(n)]
-    df['utility'] = results['opt_utils']
-    df['position_cost'] = results['opt_costs']
-
-    if 'izlaz_norm' in df.columns:
-        df = df.drop(columns=['izlaz_norm'])
-
-    return df
