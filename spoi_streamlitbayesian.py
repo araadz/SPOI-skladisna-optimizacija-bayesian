@@ -20,7 +20,7 @@ import io
 from datetime import datetime
 
 # Import modela
-import warehouse_model_bayesian.py as model
+import warehouse_model_bayesian as model
 
 # ============================================================
 # PAGE CONFIG
